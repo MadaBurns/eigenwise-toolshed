@@ -1648,7 +1648,8 @@ test('MCP defaults cap category, dispatch, and pulse result payloads', async () 
 
   const ticket = await callTool('add', { project, title: 'payload dispatch', description: DISPATCH_DESCRIPTION, category: 'payload-0' });
   const dispatched = await callToolRaw('dispatch', { allowUnscoped: true, project, ref: ticket.ref });
-  assert.ok(Buffer.byteLength(dispatched.content[0].text) <= 1300, `dispatch is ${Buffer.byteLength(dispatched.content[0].text)} bytes`);
+  // Reviewed build: the runtime-specific launcher path (launchers/<sha256>/) adds 75 bytes per dispatch (measured).
+  assert.ok(Buffer.byteLength(dispatched.content[0].text) <= 1375, `dispatch is ${Buffer.byteLength(dispatched.content[0].text)} bytes`);
   const dispatchPayload = JSON.parse(dispatched.content[0].text);
   assert.deepStrictEqual(Object.keys(dispatchPayload).sort(), ['effort', 'ref', 'runsLabel', 'spawn', 'writeScope']);
   assert.equal(dispatchPayload.writeScope, 'write scope: unscoped (whole tree)');
@@ -1658,7 +1659,8 @@ test('MCP defaults cap category, dispatch, and pulse result payloads', async () 
 
   const warningTicket = await callTool('add', { project, title: 'payload warning', description: DISPATCH_DESCRIPTION, category: 'debugging', files: ['fixture.ts'] });
   const warningDispatch = await callToolRaw('dispatch', { allowUnscoped: true, project, ref: warningTicket.ref });
-  assert.ok(Buffer.byteLength(warningDispatch.content[0].text) <= 1300, `warning dispatch is ${Buffer.byteLength(warningDispatch.content[0].text)} bytes`);
+  // Reviewed build: the runtime-specific launcher path (launchers/<sha256>/) adds 75 bytes per dispatch (measured).
+  assert.ok(Buffer.byteLength(warningDispatch.content[0].text) <= 1375, `warning dispatch is ${Buffer.byteLength(warningDispatch.content[0].text)} bytes`);
   assert.equal(JSON.parse(warningDispatch.content[0].text).warnings, undefined);
 
   const pulse = await callToolRaw('pulse', { project, ref: ticket.ref });
@@ -4706,7 +4708,7 @@ test('SQ-2961: CLI and MCP groom-close answer recovery evidence with one retirem
 test('dispatch returns a stable executor, one spawn prompt, and a token', async () => {
   const d = mcp.toolDescriptors().find((t: any) => t.name === 'dispatch');
   assert.ok(d);
-  assert.deepStrictEqual(Object.keys(d.inputSchema.properties).sort(), ['allowRepeatFailure', 'allowUnscoped', 'claimHolder', 'full', 'integrationBranch', 'project', 'recoveryEvidence', 'reducedAgentSchema', 'ref', 'retireOnly', 'sharedTree', 'worktree']);
+  assert.deepStrictEqual(Object.keys(d.inputSchema.properties).sort(), ['allowRepeatFailure', 'allowUnscoped', 'claimHolder', 'full', 'integrationBranch', 'integrationCheckout', 'project', 'recoveryEvidence', 'reducedAgentSchema', 'ref', 'retireOnly', 'sharedTree', 'worktree']);
   assert.deepStrictEqual(d.inputSchema.required, ['ref']);
 
   seedCatalog([{ slug: 'codex-gpt-5-6-terra', id: 'claude-gpt-5.6-terra', label: 'Terra' }]);
@@ -4965,6 +4967,118 @@ test('reduced Agent-schema claims require hook identity and permission evidence,
   assert.equal((await callTool('claim', claimInput(full, 'full-schema-worker'))).ok, true);
   assert.equal(runRuntimeIdentityBind({ ...hookInput(full, 'full-schema-agent', 'auto'), agent_id: '' }), null);
 });
+
+async function reducedPermissionFixture(title: string, readonly = false) {
+  const category = readonly ? 'reduced-permission-readonly' : 'reduced-permission-write';
+  store.setCategory({ id: category, name: category, route: { model: 'fable', effort: 'high' }, readonly });
+  const ticket = await callTool('add', {
+    title, description: DISPATCH_DESCRIPTION, category, files: ['plugins/sidequest'],
+  });
+  const dispatch = await callTool('dispatch', { ref: ticket.ref, reducedAgentSchema: true, full: true });
+  const spawnHook = runForceBypass({
+    session_id: MCP_SESSION_ID, cwd: PROJ, permission_mode: 'auto', tool_name: 'Agent', tool_input: dispatch.spawn,
+  });
+  const spawn = spawnHook?.hookSpecificOutput?.updatedInput || dispatch.spawn;
+  assert.equal(Object.hasOwn(spawn, 'mode'), false);
+  assert.equal(Object.hasOwn(spawn, 'name'), false);
+  assert.notEqual(spawnHook?.hookSpecificOutput?.permissionDecision, 'allow');
+  const state = store.getTicket(ticket.project, ticket.ref).dispatch;
+  const claim = {
+    ref: ticket.ref, project: ticket.project, by: `worker-${ticket.ref}`,
+    effort: 'high', executor: state.executor, tokenFile: state.tokenFile,
+  };
+  const hook = {
+    tool_name: 'mcp__plugin_sidequest_board__claim', cwd: PROJ,
+    session_id: MCP_SESSION_ID, agent_id: `runtime-${ticket.ref}`,
+    agent_type: dispatch.spawn.subagent_type, permission_mode: 'auto', tool_input: claim,
+  };
+  return { ticket, dispatch, state, claim, hook };
+}
+
+for (const readonly of [false, true]) {
+  for (const permissionMode of ['auto', 'bypassPermissions']) {
+    test(`reduced permission: ${readonly ? 'read-only' : 'write'} claims accept hook-observed ${permissionMode} without approving tools`, async () => {
+      const fixture = await reducedPermissionFixture(`inherited ${permissionMode} ${readonly}`, readonly);
+      assert.equal(runRuntimeIdentityBind({ ...fixture.hook, permission_mode: permissionMode }), null);
+      const claimed = await callTool('claim', fixture.claim);
+      assert.equal(claimed.ok, true);
+      const stored = store.getTicket(fixture.ticket.project, fixture.ticket.ref);
+      assert.equal(stored.dispatch.agentId, fixture.hook.agent_id);
+      assert.equal(stored.dispatch.observedPermissionMode, permissionMode);
+      assert.equal(stored.claim.by, fixture.claim.by);
+    });
+  }
+}
+
+test('reduced permission: caller-supplied evidence cannot replace hook observations', async () => {
+  const fixture = await reducedPermissionFixture('forged permission evidence');
+  const forged = { ...fixture.claim, permissionMode: 'auto', agentId: fixture.hook.agent_id };
+  const denied = runRuntimeIdentityBind({ ...fixture.hook, permission_mode: '', tool_input: forged });
+  assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /missing/);
+  assert.equal((await callToolRaw('claim', forged)).isError, true);
+  assert.equal((await callTool('claim', fixture.claim)).ok, false);
+  assert.equal(store.getTicket(fixture.ticket.project, fixture.ticket.ref).claim, null);
+});
+
+test('reduced permission: auto does not admit invalid tokens, sessions, executors, effort or identities', async () => {
+  for (const invalid of ['token', 'session', 'executor', 'effort', 'identity']) {
+    const fixture = await reducedPermissionFixture(`invalid auto ${invalid}`);
+    const claim = { ...fixture.claim };
+    const hook = { ...fixture.hook, tool_input: claim };
+    if (invalid === 'token') claim.tokenFile = path.join(SIDEQUEST_HOME, 'absent-token');
+    if (invalid === 'session') hook.session_id = 'foreign-runtime-session';
+    if (invalid === 'executor') claim.executor = 'sidequest:sidequest-exec-low';
+    if (invalid === 'effort') claim.effort = 'low';
+    if (invalid === 'identity') hook.agent_id = '';
+    runRuntimeIdentityBind(hook);
+    assert.equal((await callTool('claim', claim)).ok, false, invalid);
+    const stored = store.getTicket(fixture.ticket.project, fixture.ticket.ref);
+    assert.equal(stored.claim, null, invalid);
+    assert.equal(stored.dispatch.agentId, undefined, invalid);
+  }
+  const fixture = await reducedPermissionFixture('auto identity is immutable');
+  assert.equal(runRuntimeIdentityBind(fixture.hook), null);
+  const denied = runRuntimeIdentityBind({ ...fixture.hook, agent_id: 'foreign-agent' });
+  assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(store.getTicket(fixture.ticket.project, fixture.ticket.ref).dispatch.agentId, fixture.hook.agent_id);
+});
+
+for (const permissionMode of ['', 'acceptEdits', 'unrecognized-mode']) {
+  test(`reduced permission: refused ${permissionMode || 'missing'} mode waits for terminal evidence, then permits a fresh dispatch`, async () => {
+    const fixture = await reducedPermissionFixture(`refused mode ${permissionMode}`);
+    const denied = runRuntimeIdentityBind({ ...fixture.hook, permission_mode: permissionMode });
+    assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(denied.hookSpecificOutput.permissionDecisionReason, permissionMode ? /unsupported/ : /missing/);
+    assert.equal((await callTool('claim', fixture.claim)).ok, false);
+    const refused = store.getTicket(fixture.ticket.project, fixture.ticket.ref);
+    assert.equal(refused.claim, null);
+    assert.equal(refused.dispatch.agentId, fixture.hook.agent_id, 'identity is retained for terminal correlation, not claim authority');
+    assert.equal(refused.dispatch.terminalAt, undefined);
+    const blocked = await callToolRaw('dispatch', { ref: fixture.ticket.ref, reducedAgentSchema: true });
+    assert.equal(blocked.isError, true, 'a live refused runtime is not retired');
+    assert.match(blocked.content[0].text, /live dispatch attempt/);
+    const stop = (agentId: string) => execFileSync(process.execPath, [path.join(__dirname, '..', 'hooks', 'subagent-stop.js')], {
+      input: JSON.stringify({ session_id: MCP_SESSION_ID, agent_type: fixture.hook.agent_type, agent_id: agentId }),
+      encoding: 'utf8',
+      env: { ...process.env, SIDEQUEST_HOME, CLAUDE_PROJECT_DIR: PROJ, CLAUDE_PLUGIN_ROOT: path.join(__dirname, '..') },
+    });
+    stop('foreign-stop-agent');
+    assert.equal(store.getTicket(fixture.ticket.project, fixture.ticket.ref).dispatch.terminalAt, undefined);
+    stop(fixture.hook.agent_id);
+    assert.ok(store.getTicket(fixture.ticket.project, fixture.ticket.ref).dispatch.terminalAt);
+    const fresh = await callTool('dispatch', { ref: fixture.ticket.ref, reducedAgentSchema: true, full: true });
+    assert.ok(fresh.spawn?.subagent_type);
+    assert.equal(typeof fresh.token, 'string');
+    assert.notEqual(fresh.token, fixture.dispatch.token);
+    assert.equal((await callTool('claim', fixture.claim)).ok, false, 'the old token stays invalid');
+    runForceBypass({ session_id: MCP_SESSION_ID, cwd: PROJ, tool_name: 'Agent', tool_input: fresh.spawn });
+    const state = store.getTicket(fixture.ticket.project, fixture.ticket.ref).dispatch;
+    const claim = { ...fixture.claim, tokenFile: state.tokenFile };
+    assert.equal(runRuntimeIdentityBind({ ...fixture.hook, agent_id: `replacement-${fixture.ticket.ref}`, tool_input: claim }), null);
+    assert.equal((await callTool('claim', claim)).ok, true);
+  });
+}
 
 test('MCP dispatch records the runtime session and the Agent lifecycle binds it', async () => {
   const slug = store.ensureProject(PROJ).slug;

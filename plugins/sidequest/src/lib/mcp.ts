@@ -67,7 +67,10 @@ const DEFAULT_PROTOCOL_VERSION = '2025-06-18';
 // Raised from 24300 for groomClose/integrate deliveryRevision and resolvedPaths (GitHub #144), the only route
 // that closes a candidate rebased or squash-merged before it landed: +980 bytes compacted, measured on the
 // wave-3 tree with SQ-3118 and GH-222 already in, so the 2.5KB reserve still holds.
-const MCP_TOOLS_LIST_MAX_BYTES = 25400;
+// Reviewed build: worktreeDirectory plus its first-call setup contract adds 171 bytes; integrationCheckout
+// adds 136 bytes including its first-call contract; retain the same reserve.
+// Rebased onto upstream 5.4.3: upstream cap 25400 + the reviewed build's 307 bytes.
+const MCP_TOOLS_LIST_MAX_BYTES = 25710;
 const MCP_TOOLS_LIST_HEADROOM_BYTES = 2500;
 
 function serverVersion() {
@@ -107,7 +110,7 @@ const mutationTails = new Map<string, Promise<void>>();
 
 const CONDITIONAL_MUTATION_FIELDS: Record<string, readonly string[]> = {
   verdict: ['correct'], new_board_profile: ['profile'], global_fallback: ['model', 'effort'],
-  board_config: ['name', 'alwaysInScope', 'deniedTools', 'readOnlyDeniedTools', 'generatedPairs', 'integrationMode',
+  board_config: ['name', 'alwaysInScope', 'deniedTools', 'readOnlyDeniedTools', 'worktreeDirectory', 'generatedPairs', 'integrationMode',
     'integrationBranch', 'worktreeIsolation', 'worktreeBase', 'notIntegratedSalvageAgeHours',
     'worktreeRecoveryRetentionAgeHours', 'autoApproveTestScope', 'autoApproveScope', 'worktreeSetup', 'worktreeDependencyPaths'],
 };
@@ -305,8 +308,10 @@ const MCP_SCHEMA_PROPERTY_DESCRIPTIONS: Record<string, Record<string, string>> =
     outputTail: 'Required blocker/contradiction output.',
   },
   story_log: { entry: 'Must begin DECISION:, CONSTRAINT:, or DISCOVERY:; max 16,000 UTF-8 bytes.' },
+  board_config: { worktreeDirectory: 'Existing Git-ignored, untracked repo-relative directory without symlinks; null restores external placement.' },
   category_edit: { fallbackModel: 'null clears.' },
   dispatch: {
+    integrationCheckout: 'Existing clean linked target checkout; its branch must match integrationBranch.',
     reducedAgentSchema: 'Only when name/mode missing; hook needs agent_id+auto|bypass mode.',
     recoveryEvidence: 'Unverified; preparer retires now, else latest signal grace; bound name only.',
   },

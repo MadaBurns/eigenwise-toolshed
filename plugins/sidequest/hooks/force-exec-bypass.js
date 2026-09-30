@@ -613,6 +613,92 @@ var import_node_crypto3 = require("node:crypto");
 var import_node_fs7 = __toESM(require("node:fs"));
 var import_node_os4 = __toESM(require("node:os"));
 var import_node_path7 = __toESM(require("node:path"));
+
+// src/lib/sidequest-install.ts
+function selectSidequestRegistry(registry, pluginRoot2, claudeHome) {
+  const fs9 = require("node:fs");
+  const path9 = require("node:path");
+  const officialId = "sidequest@eigenwise-toolshed";
+  const canonical = (value) => {
+    if (typeof value !== "string" || !value || !path9.isAbsolute(value)) return null;
+    let resolved = path9.resolve(value);
+    try {
+      resolved = fs9.realpathSync(resolved);
+    } catch (_) {
+    }
+    return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  const root = canonical(pluginRoot2);
+  const cache = canonical(path9.join(claudeHome, "plugins", "cache"));
+  const plugins = registry?.plugins && typeof registry.plugins === "object" ? registry.plugins : {};
+  const keys = Object.keys(plugins).filter((key) => /^sidequest@[^/\\@]+$/.test(key) && Array.isArray(plugins[key]));
+  const relative = root && cache ? path9.relative(cache, root) : "";
+  const parts = relative.split(path9.sep);
+  const cacheIdentity = parts.length === 3 && parts[0] !== ".." && parts[1] === "sidequest" && !path9.isAbsolute(relative);
+  let pluginId = officialId;
+  let sourceCacheFamily = null;
+  if (cacheIdentity) {
+    pluginId = `sidequest@${parts[0]}`;
+  } else if (root) {
+    if (!fs9.existsSync(root)) return { pluginId: null, installs: [] };
+    const readJson = (file) => {
+      try {
+        return JSON.parse(fs9.readFileSync(file, "utf8"));
+      } catch (_) {
+        return null;
+      }
+    };
+    const known = readJson(path9.join(claudeHome, "plugins", "known_marketplaces.json"));
+    const within = (directory, value) => value === directory || value.startsWith(directory + path9.sep);
+    const owners = [];
+    for (const [name, metadata] of Object.entries(known && typeof known === "object" ? known : {})) {
+      const id = `sidequest@${name}`;
+      if (id === officialId || !/^sidequest@[^/\\@]+$/.test(id) || metadata?.source?.source !== "directory") continue;
+      const directory = canonical(metadata.source.path);
+      if (!directory) continue;
+      const catalog = readJson(path9.join(directory, ".claude-plugin", "marketplace.json"));
+      const declarations = Array.isArray(catalog?.plugins) ? catalog.plugins.filter((entry) => entry?.name === "sidequest" && typeof entry.source === "string") : [];
+      const matching = declarations.filter((entry) => canonical(path9.resolve(directory, entry.source)) === root);
+      if (!within(directory, root) && !matching.length) continue;
+      const valid = canonical(metadata.installLocation) === directory && catalog?.name === name && matching.length === 1 && matching[0].source.startsWith("./") && !matching[0].source.split(/[\\/]/).includes("..") && within(directory, root);
+      owners.push({ pluginId: id, valid, family: canonical(path9.join(claudeHome, "plugins", "cache", name, "sidequest")) });
+    }
+    if (owners.length > 1) return { pluginId: null, installs: [] };
+    if (owners.length === 1) {
+      const owner = owners[0];
+      if (!owner.valid) return { pluginId: owner.pluginId, installs: [] };
+      pluginId = owner.pluginId;
+      sourceCacheFamily = owner.family;
+    } else {
+      let directory = root;
+      for (; ; ) {
+        const catalog = readJson(path9.join(directory, ".claude-plugin", "marketplace.json"));
+        const id = typeof catalog?.name === "string" ? `sidequest@${catalog.name}` : "";
+        if (id !== officialId && /^sidequest@[^/\\@]+$/.test(id)) return { pluginId: id, installs: [] };
+        const parent = path9.dirname(directory);
+        if (parent === directory) break;
+        directory = parent;
+      }
+      const exact = keys.filter((key) => plugins[key].some((install) => canonical(install?.installPath) === root));
+      if (exact.length > 1) return { pluginId: null, installs: [] };
+      if (exact.length === 1) pluginId = exact[0];
+    }
+  }
+  const installs = Array.isArray(plugins[pluginId]) ? plugins[pluginId] : [];
+  if (pluginId === officialId) return { pluginId, installs };
+  return {
+    pluginId,
+    installs: installs.filter((install) => {
+      if (!install || !["local", "project", "user"].includes(install.scope)) return false;
+      const candidate = canonical(install.installPath);
+      if (!root || !candidate) return false;
+      if (sourceCacheFamily) return candidate === root || path9.dirname(candidate) === sourceCacheFamily;
+      return cacheIdentity ? path9.dirname(candidate) === path9.dirname(root) : candidate === root;
+    })
+  };
+}
+
+// src/lib/dispatch-preflight.ts
 var PLUGIN_ID = "sidequest@eigenwise-toolshed";
 var REPAIR_COMMAND = "claude plugin install sidequest@eigenwise-toolshed --scope project";
 var FILE_READ_RETRY_DELAYS_MS = [20, 60, 140, 300];
@@ -665,6 +751,25 @@ function canonicalJsonFile(filePath) {
     throw new Error(`could not parse ${filePath}: ${detail}`);
   }
 }
+function servingSidequestInstall(modulePath = __filename) {
+  let installPath;
+  try {
+    installPath = import_node_path7.default.dirname(import_node_fs7.default.realpathSync(modulePath));
+  } catch {
+    return null;
+  }
+  while (true) {
+    try {
+      const manifest = jsonRecord(JSON.parse(import_node_fs7.default.readFileSync(import_node_path7.default.join(installPath, ".claude-plugin", "plugin.json"), "utf8")));
+      const version = typeof manifest?.version === "string" ? manifest.version.trim() : "";
+      if (version) return { installPath, version };
+    } catch {
+    }
+    const parent = import_node_path7.default.dirname(installPath);
+    if (parent === installPath) return null;
+    installPath = parent;
+  }
+}
 function installRuntimeSnapshot(installPath, version) {
   if (typeof installPath !== "string" || !installPath.trim()) return { detail: "the registry entry has no installPath" };
   if (typeof version !== "string" || !version.trim()) return { detail: `the registry entry for ${installPath} has no plugin version` };
@@ -687,15 +792,19 @@ function installRuntimeSnapshot(installPath, version) {
 function checkSidequestInstall(projectPath, opts = {}) {
   const claudeHome = claudeHomeDir(opts);
   const registryPath = import_node_path7.default.join(claudeHome, "plugins", "installed_plugins.json");
-  let registry;
+  const pluginRoot2 = opts.pluginRoot || servingSidequestInstall()?.installPath || "";
+  let selected = selectSidequestRegistry(null, pluginRoot2, claudeHome);
+  const provenance = () => selected.pluginId !== PLUGIN_ID ? { pluginId: selected.pluginId } : {};
   try {
-    registry = JSON.parse(readFileSyncWithRetry(registryPath, "utf8"));
+    const registry = JSON.parse(readFileSyncWithRetry(registryPath, "utf8"));
+    selected = selectSidequestRegistry(registry, pluginRoot2, claudeHome);
   } catch (err) {
-    if (err && err.code === "ENOENT") return { ok: false, reason: "missing", registryPath };
-    return { ok: false, reason: "registry_unreadable", registryPath, detail: String(err && err.message || err) };
+    const source = { pluginId: selected.pluginId === PLUGIN_ID ? null : selected.pluginId };
+    if (err && err.code === "ENOENT") return { ok: false, reason: "missing", registryPath, ...source };
+    return { ok: false, reason: "registry_unreadable", registryPath, ...source, detail: String(err && err.message || err) };
   }
-  const installs = registry?.plugins?.[PLUGIN_ID];
-  if (!Array.isArray(installs) || !installs.length) return { ok: false, reason: "missing", registryPath };
+  const { installs } = selected;
+  if (!Array.isArray(installs) || !installs.length) return { ok: false, reason: "missing", registryPath, ...provenance() };
   const target = normalizeDir(projectPath);
   const matching = installs.filter((install) => {
     if (!install) return false;
@@ -703,7 +812,7 @@ function checkSidequestInstall(projectPath, opts = {}) {
     if (!target) return false;
     return normalizeDir(install.projectPath) === target;
   });
-  if (!matching.length) return { ok: false, reason: "missing", registryPath };
+  if (!matching.length) return { ok: false, reason: "missing", registryPath, ...provenance() };
   for (const install of matching) {
     const snapshot = installRuntimeSnapshot(install.installPath, install.version);
     if ("detail" in snapshot) {
@@ -711,20 +820,24 @@ function checkSidequestInstall(projectPath, opts = {}) {
         ok: false,
         reason: "runtime_unreadable",
         registryPath,
+        ...provenance(),
         ...typeof install.installPath === "string" ? { installPath: install.installPath } : {},
         detail: snapshot.detail
       };
     }
     if (snapshot.advertisesBoardMcp) {
-      return { ok: true, registryPath, installPath: install.installPath, version: install.version.trim(), identity: snapshot.identity };
+      return { ok: true, registryPath, ...provenance(), installPath: install.installPath, version: install.version.trim(), identity: snapshot.identity };
     }
   }
-  return { ok: false, reason: "stale", registryPath, detail: "the .mcp.json snapshot declares no MCP server" };
+  return { ok: false, reason: "stale", registryPath, ...provenance(), detail: "the .mcp.json snapshot declares no MCP server" };
 }
 function repairGuidance() {
   return `Run \`${REPAIR_COMMAND}\` from / for the target project, then start a new session or run \`/reload-plugins\` before dispatching again.`;
 }
 function installRefusalMessage(check, projectPath) {
+  if (check.pluginId !== void 0 && check.pluginId !== PLUGIN_ID) {
+    return `Dispatch refused: ${check.pluginId || "Sidequest (marketplace unresolved)"} has no install with a lifecycle-compatible runtime for ${projectPath} (registry ${check.registryPath}; ${check.reason}${check.detail ? `: ${check.detail}` : ""}). Inspect the intended marketplace in /plugin and repair its install, then run /reload-plugins or start a new session. Do not replace a private build with a different marketplace to clear this check.`;
+  }
   if (check.reason === "registry_unreadable") {
     return `Dispatch refused: could not read Claude Code's plugin registry at ${check.registryPath} (${check.detail}). Fix or remove the corrupt registry, confirm sidequest@eigenwise-toolshed is installed for ${projectPath}, then dispatch again.`;
   }

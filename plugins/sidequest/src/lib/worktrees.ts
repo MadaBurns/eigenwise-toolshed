@@ -8,6 +8,8 @@ const nativeFs = require('node:fs');
 const { spawn, spawnSync } = require('node:child_process');
 const { execFileSync } = require('./git-process.js');
 const commitScope = require('./commit-scope.js');
+const { normalizeWorktreeDirectory } = require('./worktree-placement.js');
+const { integrationCheckoutPath } = require('./integration-checkout.js');
 const worktreeLease = require('./kernel/worktree.js') as {
   canonicalPath: (value: string) => string;
   checkoutInstanceIdentity: (gitDirectory: string) => string | null;
@@ -541,7 +543,7 @@ function worktreeProjectSlug(repository: string): string {
   return `${base}-${hash}`;
 }
 
-function worktreeRoot(repository: string): string {
+function defaultWorktreeRoot(repository: string): string {
   const project = canonicalPath(repository);
   const slug = worktreeProjectSlug(project);
   const preferred = path.join(sidequestHome(), 'worktrees', slug);
@@ -549,6 +551,21 @@ function worktreeRoot(repository: string): string {
   const fallback = path.join(os.tmpdir(), 'sidequest', 'worktrees', slug);
   if (!pathIsInside(project, fallback)) return fallback;
   throw new Error(`Sidequest cannot place an isolated worktree outside project root ${project}.`);
+}
+
+function placementProject(repository: string): { ok: boolean; slug?: string; meta?: { path: string; worktreeDirectory?: string | null } } {
+  // Resolve at call time: store imports this module, and owns metadata decoding.
+  const store = require('./store.js');
+  return store.findProject(store.nearestRepoRoot(canonicalPath(repository)));
+}
+
+function worktreeRoot(repository: string): string {
+  const project = placementProject(repository);
+  const root = canonicalPath(project.meta?.path || repository);
+  const directory = normalizeWorktreeDirectory(project.meta?.worktreeDirectory);
+  // Resolution is not provisioning authority. Dispatch and creation validate
+  // their own placement policy, without making discovery depend on its presence.
+  return directory == null ? defaultWorktreeRoot(root) : path.join(root, directory);
 }
 
 function legacyWorktreeRoot(repository: string): string {
@@ -596,7 +613,14 @@ function namedWorktreePath(repository: string, name: string): string {
 }
 
 function agentWorktreeRoots(repository: string): string[] {
-  return [worktreeRoot(repository), legacyWorktreeRoot(repository)];
+  const project = placementProject(repository);
+  const tickets: { dispatch?: { worktreeRoot?: string; attempts?: { worktreeRoot?: string }[] } }[] = project.ok
+    ? require('./store.js').listTickets(project.slug)
+    : [];
+  const retained = tickets.flatMap((ticket) => [ticket.dispatch, ...(ticket.dispatch?.attempts || [])])
+    .map((dispatch) => dispatch?.worktreeRoot)
+    .filter((root): root is string => typeof root === 'string' && path.isAbsolute(root));
+  return [...new Set([worktreeRoot(repository), defaultWorktreeRoot(repository), legacyWorktreeRoot(repository), ...retained])];
 }
 
 function persistentStateFile(): string {
@@ -718,11 +742,24 @@ function isAgentWorktree(repo: string, worktree: string): boolean {
 
 function ticketForWorktree(tickets: any[], entry: any): any | null {
   const worktree = canonicalPath(entry.worktree);
-  const matches = tickets.filter((ticket) => {
+  const currentMatches = tickets.filter((ticket) => {
     const knownWorktree = dispatchWorktreeForTicket(ticket);
-    return Boolean(knownWorktree && canonicalPath(knownWorktree) === worktree);
+    return knownWorktree && canonicalPath(knownWorktree) === worktree;
   });
-  return matches.length === 1 ? matches[0] : null;
+  // Retained history cannot hide the current dispatch's live claim.
+  const matches = currentMatches.length ? currentMatches : tickets.flatMap((ticket) => {
+    const attempts = Array.isArray(ticket.dispatch?.attempts) ? ticket.dispatch.attempts : [];
+    const attempt = attempts.findLast((state: any) => state?.worktree && canonicalPath(state.worktree) === worktree);
+    if (!attempt) return [];
+    // This is a cleanup-only view, never a store update. The lease still checks
+    // completed creation, terminal evidence and the observed checkout instance.
+    // A newer ticket closure cannot declare an older checkout's work delivered.
+    return [{ ...ticket, archived: false, status: 'todo', submission: null,
+      dispatch: { ...attempt, attempts: [attempt] } }];
+  });
+  // Ambiguous ownership is not absence: it must not grant legacy cleanup.
+  if (matches.length > 1) return { ref: null, status: 'todo', claimLive: matches.some(liveClaimTicket) };
+  return matches[0] || null;
 }
 
 function localBranchName(ref: unknown): string | null {
@@ -1081,6 +1118,10 @@ async function classifyWorktree(repo: string, tickets: any[], entry: any, curren
   const worktreePath = canonicalPath(entry.worktree);
   const current = worktreePath === canonicalPath(currentPath);
   if (current) return classifiedWorktreeEntry(entry, ticket, facts, 'keep', 'current_worktree', true);
+  const integrationTarget = tickets.some((candidate) => [candidate.dispatch, ...(Array.isArray(candidate.dispatch?.attempts) ? candidate.dispatch.attempts : [])]
+    .some((state) => state?.integrationTarget?.checkout?.path && canonicalPath(state.integrationTarget.checkout.path) === worktreePath));
+  // A recorded target path is enough to refuse cleanup, never to authorize it.
+  if (integrationTarget) return classifiedWorktreeEntry(entry, ticket, facts, 'keep', 'integration_target', false);
 
   const lease = await worktreeCleanupLease(repo, ticket, entry, livePaths);
   const cleanup = worktreeLease.worktreeCleanupDecision(lease, registeredWorktrees);
@@ -1090,6 +1131,13 @@ async function classifyWorktree(repo: string, tickets: any[], entry: any, curren
     lease,
     leaseDecision: cleanup.reason,
   };
+  // Reviewed build: a worktree inside the repository (outside the legacy .claude/worktrees root) with no
+  // Sidequest lease identity was not created by Sidequest - an operator checkout such as `git wt-new`, a
+  // release tree, or an integration branch. Never sweep it, whatever the cleanup lease decides.
+  if (lease.identity.status === 'unknown' && pathIsInside(canonicalPath(repo), worktreePath)
+    && !pathIsInside(canonicalPath(legacyWorktreeRoot(repo)), worktreePath)) {
+    return { ...classifiedWorktreeEntry(entry, ticket, facts, 'keep', 'unowned_worktree', false), lease, leaseDecision: cleanup.reason };
+  }
   if (!cleanup.allowed && !registeredWorktrees.some((registered) => canonicalPath(registered) === worktreePath)) {
     return {
       ...classifiedWorktreeEntry(entry, ticket, facts, 'keep', leaseCleanupSkipReason(cleanup), false),
@@ -1377,7 +1425,7 @@ async function integrationCandidates(repo: string, options: any, branchHead: str
 // on that branch with clean tracked files, and never near a remote ref.
 async function advanceIntegrationBranch(repo: string, options: any = {}): Promise<any> {
   try {
-    return await advanceLocalIntegrationBranch(repo, options);
+    return await advanceLocalIntegrationBranch(integrationCheckoutPath(repo, options.integrationTarget), options, repo);
   } catch (error: any) {
     const branch = String((options.integrationTarget || {}).branch || '').trim() || null;
     return advanceOutcome({
@@ -1388,7 +1436,7 @@ async function advanceIntegrationBranch(repo: string, options: any = {}): Promis
   }
 }
 
-async function advanceLocalIntegrationBranch(repo: string, options: any): Promise<any> {
+async function advanceLocalIntegrationBranch(repo: string, options: any, repository: string): Promise<any> {
   const target = options.integrationTarget || {};
   const mode = String(target.mode || '').trim();
   const branch = String(target.branch || '').trim();
@@ -1444,7 +1492,7 @@ async function advanceLocalIntegrationBranch(repo: string, options: any): Promis
     });
   }
 
-  const candidates = await integrationCandidates(repo, options, branchHead, submissionCommit);
+  const candidates = await integrationCandidates(repository, options, branchHead, submissionCommit);
   const carrying = candidates.filter((candidate) => candidate.carriesWork);
   const advanceable = carrying.filter((candidate) => candidate.fastForward);
   if (!carrying.length) {
@@ -1523,6 +1571,7 @@ async function advanceLocalIntegrationBranch(repo: string, options: any): Promis
     }, common));
   }
 
+  integrationCheckoutPath(repository, target);
   const merged = await git(repo, ['merge', '--ff-only', to]);
   if (!merged.ok) {
     return advanceOutcome(Object.assign({
@@ -2633,4 +2682,4 @@ async function sweep(repo: string, tickets: any[], options: any = {}): Promise<a
   };
 }
 
-module.exports = { WORKTREE_SWEEP_CLASSIFICATION_ORDER, retainedBranchExplanation, retainedWorktreeResumeDecision, DEFAULT_MIN_AGE_MS, DEFAULT_NOT_INTEGRATED_SALVAGE_AGE_MS, DEFAULT_RECOVERY_RETENTION_AGE_MS, gitBashPath, canonicalPath, worktreeRoot, legacyWorktreeRoot, agentWorktreePath, agentWorktreeCandidates, agentIdFromWorktreePath, resolvedAgentWorktree, namedWorktreePath, agentWorktreeRoots, parseWorktreeList, isAgentWorktree, ignoredPathsMissingFromWorktree, copyDependencyPath, provisionGateDependencies, provisionWorktree, preferredWorktreeIntegrationTarget, classifyWorktree, advanceIntegrationBranch, reclaimUnclaimedDispatchWorktree, quarantineCandidate, storageStatus, sweep, dependencyLinkSafety, releaseQuarantinedDependencyLinks };
+module.exports = { WORKTREE_SWEEP_CLASSIFICATION_ORDER, retainedBranchExplanation, retainedWorktreeResumeDecision, DEFAULT_MIN_AGE_MS, DEFAULT_NOT_INTEGRATED_SALVAGE_AGE_MS, DEFAULT_RECOVERY_RETENTION_AGE_MS, gitBashPath, canonicalPath, worktreeRoot, legacyWorktreeRoot, agentWorktreePath, agentWorktreeCandidates, agentIdFromWorktreePath, resolvedAgentWorktree, namedWorktreePath, agentWorktreeRoots, parseWorktreeList, isAgentWorktree, ignoredPathsMissingFromWorktree, copyDependencyPath, provisionGateDependencies, provisionWorktree, preferredWorktreeIntegrationTarget, classifyWorktree, advanceIntegrationBranch, reclaimUnclaimedDispatchWorktree, quarantineCandidate, storageStatus, sweep, dependencyLinkSafety, releaseQuarantinedDependencyLinks, defaultWorktreeRoot };

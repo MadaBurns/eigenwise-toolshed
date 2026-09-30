@@ -13,7 +13,7 @@ function boardMcpSessionId() {
 }
 const SERVER_NAME = "sidequest";
 const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
-const MCP_TOOLS_LIST_MAX_BYTES = 25400;
+const MCP_TOOLS_LIST_MAX_BYTES = 25710;
 const MCP_TOOLS_LIST_HEADROOM_BYTES = 2500;
 function serverVersion() {
   try {
@@ -80,6 +80,7 @@ const CONDITIONAL_MUTATION_FIELDS = {
     "alwaysInScope",
     "deniedTools",
     "readOnlyDeniedTools",
+    "worktreeDirectory",
     "generatedPairs",
     "integrationMode",
     "integrationBranch",
@@ -261,8 +262,10 @@ const MCP_SCHEMA_PROPERTY_DESCRIPTIONS = {
     outputTail: "Required blocker/contradiction output."
   },
   story_log: { entry: "Must begin DECISION:, CONSTRAINT:, or DISCOVERY:; max 16,000 UTF-8 bytes." },
+  board_config: { worktreeDirectory: "Existing Git-ignored, untracked repo-relative directory without symlinks; null restores external placement." },
   category_edit: { fallbackModel: "null clears." },
   dispatch: {
+    integrationCheckout: "Existing clean linked target checkout; its branch must match integrationBranch.",
     reducedAgentSchema: "Only when name/mode missing; hook needs agent_id+auto|bypass mode.",
     recoveryEvidence: "Unverified; preparer retires now, else latest signal grace; bound name only."
   },

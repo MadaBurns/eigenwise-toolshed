@@ -229,7 +229,7 @@ function bindClaimRuntimeIdentity(input, agentId, executor) {
       if (binding?.ticket?.dispatch?.reducedAgentSchema === true && !binding.ok) {
         writeDeny(
           "PreToolUse",
-          binding.message || `sidequest: ${ref} reduced Agent-schema dispatch could not verify this hook-reported runtime identity (${binding.reason || "unknown reason"}). Stop without claiming; use a host that reports agent_id and permission_mode ("auto" or "bypassPermissions") to PreToolUse. Do not add unsupported Agent fields or change permissions.`
+          binding.message || `sidequest: ${ref} reduced Agent-schema dispatch could not verify hook-reported runtime identity (${binding.reason || "unknown"}). Stop without claiming. The hook must report matching agent_id, session and executor plus permission_mode "auto" or "bypassPermissions"; do not add unsupported Agent fields or change permissions.`
         );
       }
     }

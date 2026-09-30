@@ -1,5 +1,7 @@
 "use strict";
 const { normalizeDeniedTools } = require("../denied-tools.js");
+const { normalizeWorktreeDirectory, configuredWorktreeRoot } = require("../worktree-placement.js");
+const { captureIntegrationCheckout, integrationCheckoutPath } = require("../integration-checkout.js");
 const DEFAULT_NOT_INTEGRATED_SALVAGE_AGE_HOURS = 7 * 24;
 const DEFAULT_WORKTREE_RECOVERY_RETENTION_AGE_HOURS = 14 * 24;
 function createConfig({ DEFAULT_INTEGRATION_VERIFY_TIMEOUT_MS, DELIVERY_MODES, execFileSync, fs, getProjectCategories, integrationTargetRef, isInScope, isTrackedBuildOutput, packageBuildOutputs, packageRootForScope, path, projectRoutingProfile, readMeta, routingProfileEntries, MAX_INTEGRATION_VERIFY_TIMEOUT_MS, WORKTREE_SETUP_MAX_LENGTH, withMetaLock, putProject }) {
@@ -278,10 +280,17 @@ function createConfig({ DEFAULT_INTEGRATION_VERIFY_TIMEOUT_MS, DELIVERY_MODES, e
     if (!meta) return null;
     const requested = override && typeof override === "object" ? override : {};
     const configured = normalizeIntegrationMode(requested.mode ?? meta.integrationMode);
-    const mode = configured === "auto" ? hasOriginRemote(meta.path) ? "remote" : "local" : configured;
     const branch = normalizeIntegrationBranch(requested.branch ?? (typeof override === "string" ? override : meta.integrationBranch));
+    const localCheckoutOnly = requested.checkoutPath != null && !integrationBranchExists(meta.path, `refs/remotes/origin/${branch}`);
+    const mode = configured === "auto" ? hasOriginRemote(meta.path) && !localCheckoutOnly ? "remote" : "local" : configured;
     const upstream = mode === "local" ? branch : `origin/${branch}`;
-    const target = { mode, upstream, branch };
+    const target = {
+      mode,
+      upstream,
+      branch,
+      ...requested.checkoutPath != null ? { checkout: captureIntegrationCheckout(meta.path, requested.checkoutPath, branch) } : Object.hasOwn(requested, "checkout") ? { checkout: requested.checkout } : {}
+    };
+    integrationCheckoutPath(meta.path, target);
     const ref = integrationTargetRef(target);
     if (!integrationBranchExists(meta.path, ref)) {
       throw new Error(`Configured integration ref "${ref}" for branch "${branch}" does not exist. Create or fetch it, or set integrationBranch with board-config --integration-branch <branch>.`);
@@ -320,6 +329,7 @@ function createConfig({ DEFAULT_INTEGRATION_VERIFY_TIMEOUT_MS, DELIVERY_MODES, e
       integrationVerifyTimeoutMs: normalizeIntegrationVerifyTimeoutMs(meta.integrationVerifyTimeoutMs),
       worktreeIsolation: normalizeWorktreeIsolation(meta.worktreeIsolation),
       worktreeBase: normalizeWorktreeBase(meta.worktreeBase),
+      worktreeDirectory: normalizeWorktreeDirectory(meta.worktreeDirectory),
       notIntegratedSalvageAgeHours: normalizeNotIntegratedSalvageAgeHours(meta.notIntegratedSalvageAgeHours),
       worktreeRecoveryRetentionAgeHours: normalizeWorktreeRecoveryRetentionAgeHours(meta.worktreeRecoveryRetentionAgeHours),
       autoApproveTestScope: normalizeAutoApproveTestScope(meta.autoApproveTestScope == null ? meta.autoApprovePluginTests : meta.autoApproveTestScope),
@@ -375,6 +385,10 @@ function createConfig({ DEFAULT_INTEGRATION_VERIFY_TIMEOUT_MS, DELIVERY_MODES, e
       }
       if (Object.prototype.hasOwnProperty.call(patch, "worktreeIsolation")) {
         meta.worktreeIsolation = normalizeWorktreeIsolation(patch.worktreeIsolation);
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "worktreeDirectory")) {
+        configuredWorktreeRoot(meta.path, patch.worktreeDirectory);
+        meta.worktreeDirectory = normalizeWorktreeDirectory(patch.worktreeDirectory);
       }
       if (Object.prototype.hasOwnProperty.call(patch, "worktreeBase")) {
         meta.worktreeBase = normalizeWorktreeBase(patch.worktreeBase);

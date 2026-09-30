@@ -27,6 +27,7 @@
  */
 
 const fs = require('fs');
+const { integrationCheckoutKey } = require('./integration-checkout.js');
 const os = require('os');
 const path = require('path');
 const { dispatchLaunchName, isReadOnlyExecutor, stableClaudeName, stableDispatchName, stableReadOnlyClaudeName, stableReadOnlyDispatchName } = require('./exec-names.js');
@@ -3128,7 +3129,8 @@ function ticketIntegrationTargets(slug?: any, tickets?: any) {
     target: ticketIntegrationTarget(slug, ticket),
   }));
   const first = resolved[0]?.target;
-  if (!first || resolved.some(({ target }) => target.mode !== first.mode || target.branch !== first.branch || target.upstream !== first.upstream)) {
+  if (!first || resolved.some(({ target }) => target.mode !== first.mode || target.branch !== first.branch || target.upstream !== first.upstream
+    || integrationCheckoutKey(target) !== integrationCheckoutKey(first))) {
     return {
       ok: false,
       reason: 'integration_target_mismatch',
