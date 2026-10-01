@@ -2875,6 +2875,7 @@ function ticketIntegrationTargets(slug, tickets) {
   return { ok: true, target: first, targets: resolved };
 }
 function deliveryIntegrationTarget(slug, recorded, integrationBranch) {
+  if (recorded && Object.hasOwn(recorded, "checkout")) return recorded;
   const branch = integrationBranch == null ? checkedOutBranchDescendingFrom(readMeta(slug)?.path, commitScope.integrationTargetRef(recorded)) : normalizeIntegrationBranch(integrationBranch);
   if (!branch || branch === recorded.branch) return recorded;
   return integrationTarget(slug, { mode: deliveryBranchMode(slug, recorded.mode, branch), branch });

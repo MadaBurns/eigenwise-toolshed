@@ -3148,6 +3148,11 @@ function ticketIntegrationTargets(slug?: any, tickets?: any) {
 // for remote mode to read, and delivery only ever moves the local branch, so that
 // target falls back to local mode rather than refusing.
 function deliveryIntegrationTarget(slug?: any, recorded?: any, integrationBranch?: any) {
+  // Reviewed build: a target that pins an integration checkout is authoritative. Re-deriving the branch from
+  // the SHARED checkout would mint a fresh target without the pin, and integrationCheckoutPath would then
+  // deliver into the shared checkout instead of the pinned one. A caller-supplied branch is ignored for the
+  // same reason (5.3.2 behaviour, locked by "manual reconciliation ignores a caller replacement target").
+  if (recorded && Object.hasOwn(recorded, 'checkout')) return recorded;
   const branch = integrationBranch == null
     ? checkedOutBranchDescendingFrom(readMeta(slug)?.path, commitScope.integrationTargetRef(recorded))
     : normalizeIntegrationBranch(integrationBranch);
