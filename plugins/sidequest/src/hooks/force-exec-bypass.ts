@@ -286,7 +286,10 @@ function agentDenyReason(input: HookInput, type: string, classification: Executo
 // session and refused when it comes back as Explore, and fan-out past the free spawns without any board
 // interaction is refused toward a spike ticket. Subagent callers never reach this guard: their Explore
 // spawns take the rewriteExecutorHelper path first, so executors' helpers stay untouched.
-const EXPLORE_FREE_SPAWNS = 2;
+// BlackVeil fork (2026-10-04): raised from upstream's 2 to 6. The operator's largest sessions open
+// with explicit four-way fan-out asks; 2 denied them on the third spawn (62 Agent denials across 12
+// sessions, 2026-09-30..10-03). 6 admits a four-way fan-out plus two sweeps before the board is required.
+const EXPLORE_FREE_SPAWNS = 6;
 const DENIED_WORK_PROMPT_PREFIX_CHARS = 160;
 const DENIED_WORK_MAX_RECORDS = 20;
 

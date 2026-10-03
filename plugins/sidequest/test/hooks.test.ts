@@ -820,24 +820,25 @@ test('pre-tool hook: native Explore and approved harness utilities pass through 
   }
 });
 
-test('pre-tool hook: main-session Explore on a routed board nudges twice then denies fan-out', () => {
+// BlackVeil fork: the free-spawn cap is 6 (upstream 2), so the nudge runs six times and the seventh denies.
+test('pre-tool hook: main-session Explore on a routed board nudges six times then denies fan-out', () => {
   const session_id = `explore-fanout-${Date.now()}`;
   const spawn = (round: number) => runHookOutput(FORCE_BYPASS, {
     session_id, cwd: BOARD_PATH, tool_name: 'Agent',
     tool_input: { subagent_type: 'Explore', prompt: `Sweep the hooks directory, angle ${round}.` },
   });
-  for (const round of [1, 2]) {
+  for (const round of [1, 2, 3, 4, 5, 6]) {
     const out = spawn(round);
     assert.equal(out.hookSpecificOutput.permissionDecision, undefined, `spawn ${round}`);
     assert.match(out.hookSpecificOutput.additionalContext, /quick evidence sweeps/);
     assert.match(out.hookSpecificOutput.additionalContext, /inherits the session model/);
     assert.match(out.hookSpecificOutput.additionalContext, /codebase-exploration/);
   }
-  const denied = spawn(3);
+  const denied = spawn(7);
   assert.equal(denied.hookSpecificOutput.permissionDecision, 'deny');
-  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /Explore spawn 3 this session with no board interaction/);
+  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /Explore spawn 7 this session with no board interaction/);
   assert.match(denied.hookSpecificOutput.permissionDecisionReason, /codebase-exploration/);
-  assert.match(spawn(4).hookSpecificOutput.permissionDecisionReason, /no board interaction/, 'a denied spawn does not consume a pass');
+  assert.match(spawn(8).hookSpecificOutput.permissionDecisionReason, /no board interaction/, 'a denied spawn does not consume a pass');
 });
 
 test('pre-tool hook: board interaction lifts the Explore fan-out cap', () => {
@@ -845,12 +846,12 @@ test('pre-tool hook: board interaction lifts the Explore fan-out cap', () => {
   runHookOutput(INLINE_WORK_NUDGE, {
     session_id, cwd: BOARD_PATH, tool_name: 'mcp__plugin_sidequest_board__claim', tool_input: {},
   });
-  for (let round = 1; round <= 4; round += 1) {
+  for (let round = 1; round <= 8; round += 1) {
     const out = runHookOutput(FORCE_BYPASS, {
       session_id, cwd: BOARD_PATH, tool_name: 'Agent',
       tool_input: { subagent_type: 'Explore', prompt: `Sweep the docs tree, angle ${round}.` },
     });
-    if (round <= 2) {
+    if (round <= 6) {
       assert.match(out.hookSpecificOutput.additionalContext, /quick evidence sweeps/, `spawn ${round}`);
     } else {
       assert.equal(out, null, `spawn ${round} passes silently after board interaction`);

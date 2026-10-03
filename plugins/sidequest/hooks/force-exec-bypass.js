@@ -985,7 +985,7 @@ function agentDenyReason(input, type, classification) {
   if (type.startsWith("sidequest-")) return sidequestTypeDenyReason(type, classification);
   return missingInstallDenyReason(input, type) || boardMcpDownReason(input) || genericAgentDenyReason(type);
 }
-var EXPLORE_FREE_SPAWNS = 2;
+var EXPLORE_FREE_SPAWNS = 6;
 var DENIED_WORK_PROMPT_PREFIX_CHARS = 160;
 var DENIED_WORK_MAX_RECORDS = 20;
 function guardSessionId(input) {
