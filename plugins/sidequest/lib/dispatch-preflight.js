@@ -251,7 +251,7 @@ function repairGuidance() {
 }
 function installRefusalMessage(check, projectPath) {
   if (check.pluginId !== void 0 && check.pluginId !== PLUGIN_ID) {
-    return `Dispatch refused: ${check.pluginId || "Sidequest (marketplace unresolved)"} has no install with a lifecycle-compatible runtime for ${projectPath} (registry ${check.registryPath}; ${check.reason}${check.detail ? `: ${check.detail}` : ""}). Inspect the intended marketplace in /plugin and repair its install, then run /reload-plugins or start a new session. Do not replace a private build with a different marketplace to clear this check.`;
+    return `Dispatch refused: ${check.pluginId || "Sidequest (marketplace unresolved)"} has no install with a lifecycle-compatible runtime registered for ${projectPath} (registry ${check.registryPath}; ${check.reason}${check.detail ? `: ${check.detail}` : ""}). Inspect the intended marketplace in /plugin and repair its install, then run /reload-plugins or start a new session. Do not replace a private build with a different marketplace to clear this check.`;
   }
   if (check.reason === "registry_unreadable") {
     return `Dispatch refused: could not read Claude Code's plugin registry at ${check.registryPath} (${check.detail}). Fix or remove the corrupt registry, confirm sidequest@eigenwise-toolshed is installed for ${projectPath}, then dispatch again.`;

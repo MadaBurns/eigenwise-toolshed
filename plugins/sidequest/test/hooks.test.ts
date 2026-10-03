@@ -1097,7 +1097,10 @@ test('pre-tool hook: a project with no Sidequest install names the install inste
     const reason = genericAgentDenial(session_id, { SIDEQUEST_CLAUDE_HOME: claudeHome });
     assert.match(reason, /implementation-agent is a generic Agent, and this project cannot dispatch a ticket executor either\./);
     assert.match(reason, /has no install with a lifecycle-compatible runtime registered for /);
-    assert.match(reason, /Run `claude plugin install sidequest@eigenwise-toolshed --scope project`/);
+    // Reviewed build: an unresolved serving marketplace may be a private build, so the repair names the
+    // intended marketplace instead of upstream's stock install command, which would replace that build.
+    assert.match(reason, /Inspect the intended marketplace in \/plugin and repair its install/);
+    assert.match(reason, /Do not replace a private build with a different marketplace/);
     assert.doesNotMatch(reason, /reconnect plugin:sidequest:board|is not running/);
   });
 });
