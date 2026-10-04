@@ -27,7 +27,7 @@
  */
 
 const fs = require('fs');
-const { integrationCheckoutKey } = require('./integration-checkout.js');
+const { integrationCheckoutKey, retiredIntegrationCheckout } = require('./integration-checkout.js');
 const os = require('os');
 const path = require('path');
 const { dispatchLaunchName, isReadOnlyExecutor, stableClaudeName, stableDispatchName, stableReadOnlyClaudeName, stableReadOnlyDispatchName } = require('./exec-names.js');
@@ -3417,7 +3417,13 @@ function completeTicketAsControlPlane(slug?: any, idOrRef?: any, opts?: any) {
     try {
       target = ticketIntegrationTarget(slug, ticket);
     } catch (error: any) {
-      return { ok: false, reason: 'integration_target_unavailable', ticket, message: String(error?.message || error) };
+      // Only abandonment may proceed past a retired pinned checkout; it re-proves reachability
+      // against the shared refs itself. Delivery stays pinned to the exact checkout.
+      const frozen = ticket.dispatch?.integrationTarget;
+      if (opts.abandonSubmission !== true || !retiredIntegrationCheckout(readMeta(slug)?.path, frozen)) {
+        return { ok: false, reason: 'integration_target_unavailable', ticket, message: String(error?.message || error) };
+      }
+      target = frozen;
     }
     if (opts.abandonSubmission === true) {
       const abandoned = recordAbandonedSubmission(slug, idOrRef, { target, reason });

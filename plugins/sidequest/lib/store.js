@@ -1,6 +1,6 @@
 "use strict";
 const fs = require("fs");
-const { integrationCheckoutKey } = require("./integration-checkout.js");
+const { integrationCheckoutKey, retiredIntegrationCheckout } = require("./integration-checkout.js");
 const os = require("os");
 const path = require("path");
 const { dispatchLaunchName, isReadOnlyExecutor, stableClaudeName, stableDispatchName, stableReadOnlyClaudeName, stableReadOnlyDispatchName } = require("./exec-names.js");
@@ -3099,7 +3099,11 @@ function completeTicketAsControlPlane(slug, idOrRef, opts) {
     try {
       target = ticketIntegrationTarget(slug, ticket);
     } catch (error) {
-      return { ok: false, reason: "integration_target_unavailable", ticket, message: String(error?.message || error) };
+      const frozen = ticket.dispatch?.integrationTarget;
+      if (opts.abandonSubmission !== true || !retiredIntegrationCheckout(readMeta(slug)?.path, frozen)) {
+        return { ok: false, reason: "integration_target_unavailable", ticket, message: String(error?.message || error) };
+      }
+      target = frozen;
     }
     if (opts.abandonSubmission === true) {
       const abandoned = recordAbandonedSubmission(slug, idOrRef, { target, reason });

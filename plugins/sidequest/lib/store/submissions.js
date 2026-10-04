@@ -1,6 +1,6 @@
 "use strict";
 const { classifyVerificationKind, commandVerificationResult, verificationAccepted, verificationFailureDiagnostic, verificationOutcome, verificationRequirement, validateVerificationWaiver, verificationWaiverDiagnostic } = require("../kernel/verification.js");
-const { integrationCheckoutPath } = require("../integration-checkout.js");
+const { integrationCheckoutPath, retiredIntegrationCheckout } = require("../integration-checkout.js");
 const { runProcessVerification } = require("../ports/process.js");
 const { isFullSuiteCommand, runFullSuiteVerification } = require("../verify-capture.js");
 const { worktreeSetupDeadlineMs } = require("../hook-timeouts.js");
@@ -708,6 +708,14 @@ ${verify.outputTail}` : null
     } catch (error) {
       if (error?.status === 1) return false;
       throw error;
+    }
+  }
+  function integrationRefExists(repo, ref) {
+    try {
+      integrationGit(repo, ["show-ref", "--verify", "--quiet", ref]);
+      return true;
+    } catch (error) {
+      return error?.status !== 1;
     }
   }
   function integrationTargetBehindLandedCandidate(ticket, target, evidence) {
@@ -1680,10 +1688,11 @@ ${verify.outputTail}` : null
     let target;
     let repo = String(readMeta(slug)?.path || "").trim();
     if (!repo) return { ok: false, reason: "integration_target_unavailable", ticket: found };
+    const retiredCheckout = retiredIntegrationCheckout(repo, found.dispatch?.integrationTarget);
     try {
-      target = found.dispatch?.integrationTarget ? ticketIntegrationTarget(slug, found) : opts.target;
+      target = retiredCheckout ? found.dispatch.integrationTarget : found.dispatch?.integrationTarget ? ticketIntegrationTarget(slug, found) : opts.target;
       if (!target?.branch) return { ok: false, reason: "integration_target_unavailable", ticket: found };
-      repo = integrationCheckoutPath(repo, target);
+      if (!retiredCheckout) repo = integrationCheckoutPath(repo, target);
     } catch (error) {
       return { ok: false, reason: "integration_target_unavailable", ticket: found, message: integrationGitError(error) };
     }
@@ -1698,7 +1707,10 @@ ${verify.outputTail}` : null
         try {
           if (integrationRefContains(repo, requiredRef, resolved)) landedCandidate = { commit: resolved, ref: requiredRef };
         } catch (error) {
-          return { ok: false, reason: "integration_target_unavailable", ticket: found, message: `${found.ref} abandonment refused because its frozen integration ref could not be inspected: ${integrationGitError(error)}` };
+          if (!(retiredCheckout && !integrationRefExists(repo, requiredRef))) {
+            return { ok: false, reason: "integration_target_unavailable", ticket: found, message: `${found.ref} abandonment refused because its frozen integration ref could not be inspected: ${integrationGitError(error)}` };
+          }
+          candidateState = "target_retired";
         }
         if (!landedCandidate) {
           for (const ref of commitScope.integrationTargetRefs(target)) {
@@ -1735,6 +1747,7 @@ ${verify.outputTail}` : null
         candidateState,
         targetBranch: target.branch,
         targetUpstream: target.upstream,
+        ...retiredCheckout ? { retiredTargetCheckout: target.checkout } : {},
         evidence: reason,
         abandonedAt: now,
         completedAt: now

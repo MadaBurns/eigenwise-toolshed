@@ -30,7 +30,8 @@ var integration_checkout_exports = {};
 __export(integration_checkout_exports, {
   captureIntegrationCheckout: () => captureIntegrationCheckout,
   integrationCheckoutKey: () => integrationCheckoutKey,
-  integrationCheckoutPath: () => integrationCheckoutPath
+  integrationCheckoutPath: () => integrationCheckoutPath,
+  retiredIntegrationCheckout: () => retiredIntegrationCheckout
 });
 module.exports = __toCommonJS(integration_checkout_exports);
 var import_node_fs = __toESM(require("node:fs"));
@@ -104,9 +105,20 @@ function integrationCheckoutPath(repository, target) {
     throw new Error(`integrationCheckout: ${error.message}`);
   }
 }
+function retiredIntegrationCheckout(repository, target) {
+  const pinned = target?.checkout;
+  if (!repository || !pinned || typeof pinned.path !== "string" || typeof pinned.gitDirectory !== "string" || typeof pinned.commonGitDirectory !== "string") return false;
+  try {
+    if (gitPath(repository, "--git-common-dir") !== pinned.commonGitDirectory) return false;
+  } catch (_) {
+    return false;
+  }
+  return !import_node_fs.default.existsSync(pinned.path) && !import_node_fs.default.existsSync(pinned.gitDirectory);
+}
 // Annotate the CommonJS export names for ESM import in node:
 0 && (module.exports = {
   captureIntegrationCheckout,
   integrationCheckoutKey,
-  integrationCheckoutPath
+  integrationCheckoutPath,
+  retiredIntegrationCheckout
 });

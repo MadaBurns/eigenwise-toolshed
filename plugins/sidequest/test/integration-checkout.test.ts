@@ -147,6 +147,73 @@ test('integration checkout never falls back to shared main when its path disappe
   assert.equal(f.git('rev-parse', 'HEAD'), before);
 });
 
+async function groomClose(f: ReturnType<typeof fixture>, ref: string, extra: Record<string, unknown> = {}) {
+  return mcp.TOOLS.find((tool: any) => tool.name === 'groomClose').handler({
+    project: f.repository, ref, by: 'retired-checkout-groomer', reason: 'Fixture closeout after the pinned checkout was swept.', ...extra,
+  });
+}
+
+function retire(f: ReturnType<typeof fixture>, options: { deleteBranch?: boolean } = {}) {
+  f.git('worktree', 'remove', '--force', f.checkout);
+  if (options.deleteBranch) f.git('branch', '-D', 'delivery');
+}
+
+test('integration checkout abandonment proceeds past a retired checkout whose branch survives', async () => {
+  const f = fixture();
+  const { ticket } = await submittedFixture(f);
+  retire(f);
+  const result = await groomClose(f, ticket.ref, { abandonSubmission: true });
+  assert.equal(result.ok, true, result.message);
+  const closed = store.getTicket(f.slug, ticket.ref);
+  assert.equal(closed.status, 'done');
+  assert.equal(closed.submission.integration.outcome, 'abandoned');
+  assert.equal(closed.submission.integration.candidateState, 'unreachable');
+  assert.equal(closed.submission.integration.retiredTargetCheckout.path, f.checkout);
+});
+
+test('integration checkout abandonment treats a deleted target branch of a retired checkout as holding nothing', async () => {
+  const f = fixture();
+  const { ticket } = await submittedFixture(f);
+  retire(f, { deleteBranch: true });
+  const result = await groomClose(f, ticket.ref, { abandonSubmission: true });
+  assert.equal(result.ok, true, result.message);
+  const closed = store.getTicket(f.slug, ticket.ref);
+  assert.equal(closed.submission.integration.outcome, 'abandoned');
+  assert.equal(closed.submission.integration.candidateState, 'target_retired');
+});
+
+test('integration checkout abandonment of a retired checkout still records a landed candidate as delivered', async () => {
+  const f = fixture();
+  const { ticket, commit } = await submittedFixture(f);
+  f.git('-C', f.checkout, 'merge', '--ff-only', commit);
+  retire(f);
+  const result = await groomClose(f, ticket.ref, { abandonSubmission: true });
+  assert.equal(result.ok, true, result.message);
+  const closed = store.getTicket(f.slug, ticket.ref);
+  assert.equal(closed.submission.integration.mode, 'already-landed');
+  assert.equal(closed.submission.integration.outcome, 'delivered');
+});
+
+test('integration checkout delivery closeout still refuses a retired checkout', async () => {
+  const f = fixture();
+  const { ticket, commit } = await submittedFixture(f);
+  retire(f);
+  const result = await groomClose(f, ticket.ref, { deliveryCommit: commit, deliveryMethod: 'manual' });
+  assert.equal(result.ok, false);
+  assert.match(String(result.message), /integrationCheckout/);
+  assert.notEqual(store.getTicket(f.slug, ticket.ref).status, 'done');
+});
+
+test('integration checkout abandonment refuses a missing path whose registration survives', async () => {
+  const f = fixture();
+  const { ticket } = await submittedFixture(f);
+  fs.rmSync(f.checkout, { recursive: true, force: true });
+  const result = await groomClose(f, ticket.ref, { abandonSubmission: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'integration_target_unavailable');
+  assert.notEqual(store.getTicket(f.slug, ticket.ref).status, 'done');
+});
+
 test('integration checkout rejects mixed-checkout targets on the same branch', () => {
   const f = fixture();
   const second = path.join(f.repository, '.worktrees/second-integration');

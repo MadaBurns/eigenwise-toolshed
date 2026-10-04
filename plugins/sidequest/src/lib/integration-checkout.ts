@@ -87,3 +87,20 @@ export function integrationCheckoutPath(repository: string, target: any): string
     throw new Error(`integrationCheckout: ${(error as Error).message}`);
   }
 }
+
+// A pinned checkout is retired only when the worktree itself and its git registration are both
+// gone from the repository that pinned it. A missing path alone may be a moved or remounted tree,
+// and a replaced tree carries a new registration, so neither counts. Delivery never consults this:
+// it stays pinned to the exact checkout. Abandonment does, because its question (did the candidate
+// reach the target refs) is answered by refs shared across every linked worktree.
+export function retiredIntegrationCheckout(repository: string, target: any): boolean {
+  const pinned = target?.checkout;
+  if (!repository || !pinned || typeof pinned.path !== 'string' || typeof pinned.gitDirectory !== 'string'
+    || typeof pinned.commonGitDirectory !== 'string') return false;
+  try {
+    if (gitPath(repository, '--git-common-dir') !== pinned.commonGitDirectory) return false;
+  } catch (_) {
+    return false;
+  }
+  return !fs.existsSync(pinned.path) && !fs.existsSync(pinned.gitDirectory);
+}
